@@ -9,12 +9,13 @@ For more user-accessible information about the current run, see [`prefect.runtim
 import os
 import sys
 import warnings
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
+    AsyncGenerator,
     Dict,
     Generator,
     Optional,
@@ -209,6 +210,22 @@ class ClientContext(ContextModel):
         self._httpx_settings = httpx_settings
         self._context_stack = 0
 
+    async def __aenter__(self):
+        self._context_stack += 1
+        if self._context_stack == 1:
+            self.sync_client.__enter__()
+            await self.async_client.__aenter__()
+            return super().__enter__()
+        else:
+            return self
+
+    async def __aexit__(self, *exc_info):
+        self._context_stack -= 1
+        if self._context_stack == 0:
+            self.sync_client.__exit__(*exc_info)
+            await self.async_client.__aexit__(*exc_info)
+            return super().__exit__(*exc_info)
+
     def __enter__(self):
         self._context_stack += 1
         if self._context_stack == 1:
@@ -233,6 +250,16 @@ class ClientContext(ContextModel):
             yield ctx
         else:
             with ClientContext() as ctx:
+                yield ctx
+
+    @classmethod
+    @asynccontextmanager
+    async def async_get_or_create(cls) -> AsyncGenerator["ClientContext", None]:
+        ctx = ClientContext.get()
+        if ctx:
+            yield ctx
+        else:
+            async with ClientContext() as ctx:
                 yield ctx
 
 
